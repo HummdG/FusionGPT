@@ -1,7 +1,7 @@
 import json
-import traceback
 import adsk.core
 import os
+import traceback
 from ...lib import fusionAddInUtils as futil
 from ... import config
 from datetime import datetime
@@ -42,6 +42,11 @@ ICON_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'resource
 # Local list of event handlers used to maintain a reference so
 # they are not released and garbage collected.
 local_handlers = []
+
+# Keep a history of recent code and errors to improve reliability
+recent_code_history = []
+recent_error_history = []
+MAX_HISTORY_ITEMS = 5
 
 
 # Executed when add-in is run.
@@ -151,8 +156,39 @@ def palette_navigating(args: adsk.core.NavigationEventArgs):
         args.launchExternally = True
 
 
+def add_to_history(item, history_list):
+    """Add an item to a history list, maintaining max size"""
+    history_list.insert(0, item)  # Add at the beginning
+    if len(history_list) > MAX_HISTORY_ITEMS:
+        history_list.pop()  # Remove oldest item
+
+
+def enhance_prompt_with_history(message):
+    """Enhance user prompt with recent errors to improve reliability"""
+    global recent_error_history
+    
+    if not recent_error_history:
+        return message
+        
+    # Check if message is likely related to fixing a previous error
+    fix_keywords = ["fix", "error", "issue", "problem", "failed", "resolve", "help", "not working"]
+    if any(keyword in message.lower() for keyword in fix_keywords):
+        # Add context about recent errors to help LLM generate more reliable code
+        error_context = "\n\nHere are recent errors to avoid:\n"
+        for i, error in enumerate(recent_error_history):
+            error_summary = error.split("\n")[0] if "\n" in error else error[:100]
+            error_context += f"{i+1}. {error_summary}\n"
+            
+        enhanced_message = f"{message}\n{error_context}"
+        return enhanced_message
+    
+    return message
+
+
 # Use this to handle events sent from javascript in your palette.
 def palette_incoming(html_args: adsk.core.HTMLEventArgs):
+    global recent_code_history, recent_error_history
+    
     try:
         # Parse the incoming data from the HTML
         data = json.loads(html_args.data)
@@ -167,9 +203,12 @@ def palette_incoming(html_args: adsk.core.HTMLEventArgs):
         if user_message.lower().startswith("execute the previous code"):
             futil.log("Executing previous code command detected", adsk.core.LogLevels.InfoLogLevel)
             
-            # This is the easiest way to extract the code directly from the pasted message
+            # Get the code to execute (either from the data or from history)
             code_to_execute = code_executor.extract_code(data.get('arg2', ''))
             
+            if not code_to_execute and recent_code_history:
+                code_to_execute = recent_code_history[0]  # Get most recent code
+                
             if not code_to_execute:
                 html_args.returnData = "No code found to execute. Please try again or provide code directly."
                 return
@@ -180,15 +219,30 @@ def palette_incoming(html_args: adsk.core.HTMLEventArgs):
             # Execute the extracted code
             execution_result = code_executor.execute_code(code_to_execute)
             
+            # Store error information if execution failed
+            if "Error" in execution_result:
+                add_to_history(execution_result, recent_error_history)
+            
             # Return the execution result
             html_args.returnData = f"Execution Result:\n```\n{execution_result}\n```"
             return
+            
+        # Check if the user is asking to fix an error
+        is_fixing_error = any(keyword in user_message.lower() for keyword in 
+                             ["fix", "error", "failed", "issue", "problem", "not working"])
+        
+        # Enhance the prompt with error history if needed
+        enhanced_message = enhance_prompt_with_history(user_message) if is_fixing_error else user_message
         
         # Normal message flow - get response from LLM
-        response = llm_client.process_message(user_message)
+        response = llm_client.process_message(enhanced_message)
         
         # Extract code from the response
         code_to_execute = code_executor.extract_code(response)
+        
+        # Store the generated code in history if it exists
+        if code_to_execute:
+            add_to_history(code_to_execute, recent_code_history)
         
         # Always try to execute code if present (unless user explicitly says not to)
         if code_to_execute and ("don't execute" not in user_message.lower() and "do not execute" not in user_message.lower()):
@@ -199,12 +253,30 @@ def palette_incoming(html_args: adsk.core.HTMLEventArgs):
                 # Execute the code
                 execution_result = code_executor.execute_code(code_to_execute)
                 
+                # Store error information if execution failed
+                if "Error" in execution_result:
+                    add_to_history(execution_result, recent_error_history)
+                
                 # Append execution result to the response
                 response += f"\n\n**Execution Result:**\n```\n{execution_result}\n```"
+                
+                # If execution failed, suggest fixes based on error patterns
+                if "Error" in execution_result:
+                    # Add common error resolutions based on patterns
+                    if "tangent" in execution_result and "revolve" in execution_result:
+                        response += "\n\n**Suggested Fix:** The revolve operation failed because the axis is tangent to the profile. Try moving the axis away from the profile or changing the profile shape."
+                    elif "profile" in execution_result and "extrude" in execution_result:
+                        response += "\n\n**Suggested Fix:** The extrude operation failed because of an invalid profile. Ensure the sketch contains closed profiles and correct profile selection."
+                    elif "body" in execution_result and "boolean" in execution_result:
+                        response += "\n\n**Suggested Fix:** The boolean operation failed. Verify all bodies exist before the operation."
+                    else:
+                        response += "\n\n**Tip:** If you'd like me to fix this error, just ask 'Please fix the error'."
+                
             except Exception as e:
                 error_msg = f"Error during execution: {str(e)}\n{traceback.format_exc()}"
                 futil.log(error_msg, adsk.core.LogLevels.ErrorLogLevel)
                 response += f"\n\n**Execution Error:**\n```\n{error_msg}\n```"
+                add_to_history(error_msg, recent_error_history)
         
         html_args.returnData = response
         
@@ -212,6 +284,7 @@ def palette_incoming(html_args: adsk.core.HTMLEventArgs):
         error_msg = f"Error processing message: {str(e)}\n{traceback.format_exc()}"
         futil.log(error_msg, adsk.core.LogLevels.ErrorLogLevel)
         html_args.returnData = f"Error: {error_msg}"
+        add_to_history(error_msg, recent_error_history)
 
 
 # This event handler is called when the command terminates.

@@ -11,14 +11,14 @@ if not api_key: raise ValueError("Anthropic API key not set")
 # Initialize Anthropic client
 client = anthropic.Anthropic(api_key=api_key)
 
-# System message defining assistant behavior
+# System message defining assistant behavior with enhanced reliability guidance
 system_message = """You are a Fusion 360 API expert. Generate executable Python code that creates 3D models using the Fusion 360 API.
 
-IMPORTANT: All code you provide MUST be executable directly within Fusion 360.
+IMPORTANT: All code you provide MUST be executable and reliable within Fusion 360. Avoid common API errors!
 
 Follow these rules when writing Fusion 360 code:
 
-1. Always place ALL code inside a run(context) function like this:
+1. ALWAYS place ALL code inside a run(context) function with COMPREHENSIVE error handling:
 ```python
 import adsk.core
 import adsk.fusion
@@ -31,54 +31,73 @@ def run(context):
         ui = app.userInterface
         # Your code goes here
         
-    except:
+    except Exception as e:
         if ui:
             ui.messageBox('Failed:\\n{}'.format(traceback.format_exc()))
 ```
 
-2. ALWAYS use proper error handling with try/except blocks around ALL code.
+2. AVOID THESE COMMON GEOMETRY ERRORS:
+   - For revolve operations: NEVER create paths that are tangent to profiles
+   - For extrude operations: NEVER extrude zero-area profiles
+   - For sketches: ALWAYS check that profiles are closed before operations
+   - For loft/sweep: Ensure start and end profiles have compatible topology
+   - Check that construction planes are valid before using them
+   - ALWAYS use ValueInput correctly: createByReal() for simple values, createByString() for values with units
 
-3. ALWAYS initialize these variables in EVERY script:
+3. IMPLEMENT DEFENSIVE CODING:
+   - Add validation checks BEFORE performing operations
+   - Verify that sketches contain valid profiles before using them
+   - For revolve operations, ensure rotation axis doesn't intersect profile
+   - For Boolean operations, verify bodies exist before operations
+   - Use try/except blocks around EACH major operation
+
+4. ALWAYS initialize these core variables:
    - app = adsk.core.Application.get()
    - ui = app.userInterface
    - design = app.activeProduct
    - rootComp = design.rootComponent
 
-4. Properly scope variables. Variables defined inside event handlers must be accessed as nonlocal or global.
+5. Properly scope ALL variables - especially in event handlers.
 
-5. For object creation (sketches, extrudes, etc.), follow this approach:
-   - Get the container: sketches = rootComp.sketches
-   - Create the object: sketch = sketches.add(plane)
-   - Get features: extrudes = rootComp.features.extrudeFeatures
-   - Create inputs: input = extrudes.createInput(...)
-   - Set properties: input.setDistanceExtent(...)
-   - Create the feature: extrude = extrudes.add(input)
+6. For complicated geometry, use SIMPLER approaches:
+   - Prefer multiple simple operations over complex ones
+   - For complex shapes, build them using basic primitives
+   - Use construction planes to establish reliable references
+   - When creating curves, use minimum number of control points
 
-6. When creating points, use: adsk.core.Point3D.create(x, y, z)
+7. When working with standard components like holes, slots, or fillets:
+   - Use the built-in features rather than manual geometry
+   - Apply proper parameters for these features
 
-7. When specifying dimensions, use ValueInput: adsk.core.ValueInput.createByReal(5) or adsk.core.ValueInput.createByString('5 mm')
+8. For operations with multiple inputs (like loft/sweep):
+   - Validate EACH input separately 
+   - Use extra validation calculations
 
-8. ALWAYS use the complete code structure - all imported modules, function definitions, error handling, and actual code implementation.
-
-Remember, your code will be automatically executed, so make sure it works without modifications.
-
-YOU NEED TO BE MAKE SURE THAT THE GENERATED CODE IS CORRECT BASED ON THE FUSION API FOUND HERE: https://help.autodesk.com/view/fusion360/ENU/
+Remember, your code will be directly executed. ALWAYS include validation checks before geometry operations.
 """
 
 def process_message(message):
-    """Process user message using Anthropic Claude"""
+    """Process user message using Anthropic Claude with improved reliability prompting"""
     try:
-        # Enhance the user message if it doesn't explicitly ask for code
-        if "code" not in message.lower() and "script" not in message.lower():
+        # Enhance the user message to focus on reliability
+        if any(keyword in message.lower() for keyword in ["create", "make", "generate", "model", "build", "design"]):
             enhanced_message = f"""
-Create Fusion 360 Python code that will accomplish the following task:
+Create reliable Fusion API Python code that will accomplish this task:
 
 {message}
 
-IMPORTANT: Your code MUST be a complete, executable Fusion 360 script. Don't omit any necessary code sections.
-Include proper error handling, and follow Fusion 360 API best practices exactly as specified.
+IMPORTANT:
+1. Your code must be COMPLETE and EXECUTABLE
+2. Include VALIDATION CHECKS before each geometry operation
+3. Use DEFENSIVE CODING to prevent common errors
+4. For revolve operations, ensure the axis is NOT tangent to the profile
+5. For extrudes, ensure profiles are valid and closed
+6. Add helpful comments explaining your approach
+7. If the request is complex, simplify the approach
 
-The code WILL be directly executed in Fusion 360, so it needs to be complete and correct.
+The code WILL be directly executed in Fusion, so it needs to be robust against API errors.
+
+PLEASE MAKE SURE YOU ARE USING THE CORRECT CODE FROM THE FUSION WEBSITE: https://help.autodesk.com/view/fusion360/ENU/
 """
         else:
             enhanced_message = message
@@ -88,7 +107,7 @@ The code WILL be directly executed in Fusion 360, so it needs to be complete and
             response = client.messages.create(
                 model="claude-3-7-sonnet-latest",
                 system=system_message,
-                max_tokens=4000,
+                max_tokens= 20000,
                 messages=[{"role": "user", "content": enhanced_message}]
             )
             return response.content[0].text
