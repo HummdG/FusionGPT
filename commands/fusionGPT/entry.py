@@ -1,4 +1,5 @@
 import json
+import traceback
 import adsk.core
 import os
 from ...lib import fusionAddInUtils as futil
@@ -10,12 +11,12 @@ from . import code_executor
 app = adsk.core.Application.get()
 ui = app.userInterface
 
-# TODO ********************* Change these names *********************
+# Command configuration
 CMD_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_PalleteShow'
 CMD_NAME = 'FusionGPT'
 CMD_Description = 'A Fusion Add-in Palette'
 PALETTE_NAME = 'FusionGPT'
-IS_PROMOTED = False
+IS_PROMOTED = True  # Make it more visible
 
 # Using "global" variables by referencing values from /config.py
 PALETTE_ID = config.sample_palette_id
@@ -30,15 +31,12 @@ PALETTE_URL = PALETTE_URL.replace('\\', '/')
 # Set a default docking behavior for the palette
 PALETTE_DOCKING = adsk.core.PaletteDockingStates.PaletteDockStateRight
 
-# TODO *** Define the location where the command button will be created. ***
-# This is done by specifying the workspace, the tab, and the panel, and the 
-# command it will be inserted beside. Not providing the command to position it
-# will insert it at the end.
+# Define the location where the command button will be created
 WORKSPACE_ID = 'FusionSolidEnvironment'
 PANEL_ID = 'SolidScriptsAddinsPanel'
 COMMAND_BESIDE_ID = 'ScriptsManagerCommand'
 
-# Resource location for command icons, here we assume a sub folder in this directory named "resources".
+# Resource location for command icons
 ICON_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'resources', '')
 
 # Local list of event handlers used to maintain a reference so
@@ -91,9 +89,6 @@ def stop():
 
 
 # Event handler that is called when the user clicks the command button in the UI.
-# To have a dialog, you create the desired command inputs here. If you don't need
-# a dialog, don't create any inputs and the execute event will be immediately fired.
-# You also need to connect to any command related events here.
 def command_created(args: adsk.core.CommandCreatedEventArgs):
     # General logging for debug.
     futil.log(f'{CMD_NAME}: Command created event.')
@@ -158,36 +153,65 @@ def palette_navigating(args: adsk.core.NavigationEventArgs):
 
 # Use this to handle events sent from javascript in your palette.
 def palette_incoming(html_args: adsk.core.HTMLEventArgs):
-    # Parse the incoming data from the HTML
-    data = json.loads(html_args.data)
-    user_message = data.get('arg1', '')
-    
-    # Check if the user wants to execute code
-    execute_code = "/execute" in user_message.lower()
-    
-    # If execute code is requested, remove the command from the message
-    if execute_code:
-        user_message = user_message.lower().replace("/execute", "").strip()
-    
-    # Get response from LLM
-    response = llm_client.process_message(user_message)
-    
-    # If execution is requested, try to extract and run the code
-    if execute_code:
+    try:
+        # Parse the incoming data from the HTML
+        data = json.loads(html_args.data)
+        user_message = data.get('arg1', '')
+        
+        futil.log(f"Received message: {user_message}", adsk.core.LogLevels.InfoLogLevel)
+        
+        # Check if the user wants to execute code
+        execute_code = "/execute" in user_message.lower()
+        
+        # If this is an execution command for previous code
+        if user_message.lower().startswith("execute the previous code"):
+            futil.log("Executing previous code command detected", adsk.core.LogLevels.InfoLogLevel)
+            
+            # This is the easiest way to extract the code directly from the pasted message
+            code_to_execute = code_executor.extract_code(data.get('arg2', ''))
+            
+            if not code_to_execute:
+                html_args.returnData = "No code found to execute. Please try again or provide code directly."
+                return
+                
+            # Log the code for debugging
+            futil.log(f"Executing code:\n{code_to_execute}", adsk.core.LogLevels.InfoLogLevel)
+            
+            # Execute the extracted code
+            execution_result = code_executor.execute_code(code_to_execute)
+            
+            # Return the execution result
+            html_args.returnData = f"Execution Result:\n```\n{execution_result}\n```"
+            return
+        
+        # Normal message flow - get response from LLM
+        response = llm_client.process_message(user_message)
+        
         # Extract code from the response
         code_to_execute = code_executor.extract_code(response)
         
-        if code_to_execute:
-            # Execute the code
-            execution_result = code_executor.execute_code(code_to_execute)
+        # Always try to execute code if present (unless user explicitly says not to)
+        if code_to_execute and ("don't execute" not in user_message.lower() and "do not execute" not in user_message.lower()):
+            # Log the code being executed
+            futil.log(f"Auto-executing code:\n{code_to_execute}", adsk.core.LogLevels.InfoLogLevel)
             
-            # Append execution result to the response
-            response += f"\n\n**Execution Result:**\n```\n{execution_result}\n```"
-        else:
-            response += "\n\n**Execution Error:**\nNo valid Python code found in the response."
-    
-    html_args.returnData = response
-    
+            try:
+                # Execute the code
+                execution_result = code_executor.execute_code(code_to_execute)
+                
+                # Append execution result to the response
+                response += f"\n\n**Execution Result:**\n```\n{execution_result}\n```"
+            except Exception as e:
+                error_msg = f"Error during execution: {str(e)}\n{traceback.format_exc()}"
+                futil.log(error_msg, adsk.core.LogLevels.ErrorLogLevel)
+                response += f"\n\n**Execution Error:**\n```\n{error_msg}\n```"
+        
+        html_args.returnData = response
+        
+    except Exception as e:
+        error_msg = f"Error processing message: {str(e)}\n{traceback.format_exc()}"
+        futil.log(error_msg, adsk.core.LogLevels.ErrorLogLevel)
+        html_args.returnData = f"Error: {error_msg}"
 
 
 # This event handler is called when the command terminates.

@@ -1,18 +1,14 @@
 # Here you define the commands that will be added to your add-in.
 
 # Import the modules corresponding to the commands you created.
-from .commandDialog import entry as commandDialog
-from .paletteShow import entry as paletteShow
+from .fusionGPT import entry as fusionGPT
 
 # Add the new paletteChat command
 
 # Add your imported modules to this list.
 # Fusion will automatically call the start() and stop() functions.
 commands = [
-    commandDialog,
-    paletteShow,
-   
-   
+    fusionGPT,   
 ]
 
 
