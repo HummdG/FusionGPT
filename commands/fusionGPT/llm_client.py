@@ -2,6 +2,7 @@ import os, json, anthropic
 from dotenv import load_dotenv
 from ... import config
 import traceback
+from . import api_docs_retriever
 
 # Load environment variables and get API key
 load_dotenv()
@@ -11,14 +12,15 @@ if not api_key: raise ValueError("Anthropic API key not set")
 # Initialize Anthropic client
 client = anthropic.Anthropic(api_key=api_key)
 
-# System message defining assistant behavior with enhanced reliability guidance
-system_message = """You are a Fusion 360 API expert. Generate executable Python code that creates 3D models using the Fusion 360 API.
+# Initialize API documentation retriever
+api_docs = api_docs_retriever.FusionAPIDocs()
 
-IMPORTANT: All code you provide MUST be executable and reliable within Fusion 360. Avoid common API errors!
+# Base system message defining assistant behavior
+BASE_SYSTEM_MESSAGE = """You are a Fusion 360 API expert. Generate executable Python code that creates 3D models using the Fusion 360 API.
 
-Follow these rules when writing Fusion 360 code:
+You must follow these rules for EVERY Fusion 360 script:
 
-1. ALWAYS place ALL code inside a run(context) function with COMPREHENSIVE error handling:
+1. ALWAYS place ALL code inside a run(context) function with thorough error handling:
 ```python
 import adsk.core
 import adsk.fusion
@@ -36,68 +38,71 @@ def run(context):
             ui.messageBox('Failed:\\n{}'.format(traceback.format_exc()))
 ```
 
-2. AVOID THESE COMMON GEOMETRY ERRORS:
-   - For revolve operations: NEVER create paths that are tangent to profiles
-   - For extrude operations: NEVER extrude zero-area profiles
-   - For sketches: ALWAYS check that profiles are closed before operations
-   - For loft/sweep: Ensure start and end profiles have compatible topology
-   - Check that construction planes are valid before using them
-   - ALWAYS use ValueInput correctly: createByReal() for simple values, createByString() for values with units
-
-3. IMPLEMENT DEFENSIVE CODING:
-   - Add validation checks BEFORE performing operations
-   - Verify that sketches contain valid profiles before using them
-   - For revolve operations, ensure rotation axis doesn't intersect profile
-   - For Boolean operations, verify bodies exist before operations
-   - Use try/except blocks around EACH major operation
-
-4. ALWAYS initialize these core variables:
+2. ALWAYS initialize these core variables:
    - app = adsk.core.Application.get()
    - ui = app.userInterface
    - design = app.activeProduct
    - rootComp = design.rootComponent
 
-5. Properly scope ALL variables - especially in event handlers.
+3. Properly scope ALL variables, especially in event handlers.
 
-6. For complicated geometry, use SIMPLER approaches:
-   - Prefer multiple simple operations over complex ones
-   - For complex shapes, build them using basic primitives
-   - Use construction planes to establish reliable references
-   - When creating curves, use minimum number of control points
+4. Follow best practices:
+   - Implement validation checks before performing operations
+   - Use ValueInput correctly (createByReal for simple values, createByString for units)
+   - Create descriptive variable names
+   - Add clear comments
+   - Break complex operations into simpler steps
 
-7. When working with standard components like holes, slots, or fillets:
-   - Use the built-in features rather than manual geometry
-   - Apply proper parameters for these features
+5. NEVER generate code that would cause known API errors.
 
-8. For operations with multiple inputs (like loft/sweep):
-   - Validate EACH input separately 
-   - Use extra validation calculations
-
-Remember, your code will be directly executed. ALWAYS include validation checks before geometry operations.
+Remember, your code will be directly executed in Fusion 360. It must work reliably.
 """
 
-def process_message(message):
-    """Process user message using Anthropic Claude with improved reliability prompting"""
+def process_message(message, error_context=None):
+    """
+    Process user message using Anthropic Claude with RAG from API documentation
+    
+    Args:
+        message (str): The user's message
+        error_context (str, optional): Additional error context
+        
+    Returns:
+        str: The response from Claude
+    """
     try:
-        # Enhance the user message to focus on reliability
+        # Retrieve relevant API documentation
+        relevant_docs = api_docs.retrieve_relevant_docs(message)
+        api_context = api_docs.format_as_context(relevant_docs)
+        
+        # If error context is provided, try to find solutions
+        error_solution = None
+        if error_context:
+            error_solution = api_docs.retrieve_error_solution(error_context)
+        
+        # Create enhanced system message with RAG context
+        enhanced_system_message = BASE_SYSTEM_MESSAGE
+        
+        if api_context:
+            enhanced_system_message += "\n\n" + api_context
+        
+        if error_solution:
+            enhanced_system_message += f"\n\nATTENTION - PREVIOUS ERROR TO FIX:\n{error_context}\n\nSOLUTION:\n{error_solution['solution']}\n"
+        
+        # Enhance the user message if it doesn't explicitly ask for code
         if any(keyword in message.lower() for keyword in ["create", "make", "generate", "model", "build", "design"]):
             enhanced_message = f"""
-Create reliable Fusion API Python code that will accomplish this task:
+Create reliable Fusion 360 Python code that will accomplish this task:
 
 {message}
 
 IMPORTANT:
 1. Your code must be COMPLETE and EXECUTABLE
 2. Include VALIDATION CHECKS before each geometry operation
-3. Use DEFENSIVE CODING to prevent common errors
-4. For revolve operations, ensure the axis is NOT tangent to the profile
-5. For extrudes, ensure profiles are valid and closed
-6. Add helpful comments explaining your approach
-7. If the request is complex, simplify the approach
+3. Use DEFENSIVE CODING to prevent errors
+4. Follow ALL the API documentation guidance
+5. Add helpful comments explaining your approach
 
-The code WILL be directly executed in Fusion, so it needs to be robust against API errors.
-
-PLEASE MAKE SURE YOU ARE USING THE CORRECT CODE FROM THE FUSION WEBSITE: https://help.autodesk.com/view/fusion360/ENU/
+The code WILL be directly executed in Fusion 360, so it must be robust.
 """
         else:
             enhanced_message = message
@@ -106,8 +111,8 @@ PLEASE MAKE SURE YOU ARE USING THE CORRECT CODE FROM THE FUSION WEBSITE: https:/
         try:
             response = client.messages.create(
                 model="claude-3-7-sonnet-latest",
-                system=system_message,
-                max_tokens= 20000,
+                system=enhanced_system_message,
+                max_tokens=4000,
                 messages=[{"role": "user", "content": enhanced_message}]
             )
             return response.content[0].text

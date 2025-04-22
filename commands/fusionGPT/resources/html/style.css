@@ -231,6 +231,11 @@ body {
     color: #2E7D32;
 }
 
+.status-fixing {
+    background-color: #E1F5FE;
+    color: #0277BD;
+}
+
 .status-error {
     background-color: #FFEBEE;
     color: #C62828;

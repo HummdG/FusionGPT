@@ -1,11 +1,14 @@
 // Display a welcome message when the chat is first loaded
 document.addEventListener('DOMContentLoaded', function() {
-    addSystemMessage(`Welcome to FusionGPT Chat! How can I help you today?
+    addSystemMessage(`Welcome to Fusion 360 GPT Chat! How can I help you today?
     
+This chat now uses the Fusion 360 API documentation to generate reliable code!
+
 Tips:
-- Simply ask what you want to create in Fusion (e.g., "Create a box with a hinged lid")
-- All generated code will be automatically executed
-- If you want to modify a previous design, just ask!`);
+- Ask me to create 3D models and I'll generate code that follows best practices
+- I'll automatically fix common API errors
+- All generated code will be executed automatically
+- If an error occurs, I'll try to fix it and run again`);
 
     // Set up the auto-resize functionality for the input box
     const inputBox = document.getElementById("inputBox");
@@ -62,7 +65,7 @@ function addSystemMessage(text) {
     
     const senderDiv = document.createElement("div");
     senderDiv.className = "sender system";
-    senderDiv.textContent = "FusionGPT";
+    senderDiv.textContent = "Fusion GPT";
     
     const contentDiv = document.createElement("div");
     contentDiv.className = "content";
@@ -140,10 +143,13 @@ function addStatusIndicator(status, text) {
     if (!statusText) {
         switch(status) {
             case "generating":
-                statusText = "Generating code...";
+                statusText = "Generating API-compliant code...";
                 break;
             case "executing":
                 statusText = "Executing code...";
+                break;
+            case "fixing":
+                statusText = "Auto-fixing API errors...";
                 break;
             case "error":
                 statusText = "Error occurred";
@@ -182,10 +188,10 @@ function sendMessage() {
     addUserMessage(text);
     
     // Show loading indicator
-    const loadingIndicator = addLoadingIndicator("Generating response...");
+    const loadingIndicator = addLoadingIndicator("Consulting API documentation...");
     
     // Also add a status indicator
-    const statusIndicator = addStatusIndicator("generating", "Generating code...");
+    const statusIndicator = addStatusIndicator("generating", "Generating API-compliant code...");
     
     // Store any code blocks from recent system messages for reuse
     const codeBlocks = document.querySelectorAll('.system-message:last-of-type .code-block code');
@@ -219,12 +225,29 @@ function sendMessage() {
             // Add the response
             addSystemMessage(response);
             
-            // Remove the executing indicator after a delay (simulating execution time)
-            setTimeout(() => {
-                if (executingIndicator && executingIndicator.parentNode) {
-                    executingIndicator.parentNode.removeChild(executingIndicator);
-                }
-            }, 2000);
+            // Check if auto-fixing is happening
+            if (response.includes("**Automatically fixing error**") || 
+                response.includes("**Improved Solution:**")) {
+                // Add a fixing indicator
+                const fixingIndicator = addStatusIndicator("fixing", "Auto-fixing API errors...");
+                
+                // Remove indicators after a delay
+                setTimeout(() => {
+                    if (executingIndicator && executingIndicator.parentNode) {
+                        executingIndicator.parentNode.removeChild(executingIndicator);
+                    }
+                    if (fixingIndicator && fixingIndicator.parentNode) {
+                        fixingIndicator.parentNode.removeChild(fixingIndicator);
+                    }
+                }, 3000);
+            } else {
+                // Just remove the executing indicator after a delay
+                setTimeout(() => {
+                    if (executingIndicator && executingIndicator.parentNode) {
+                        executingIndicator.parentNode.removeChild(executingIndicator);
+                    }
+                }, 2000);
+            }
         } else {
             // Just add the response without execution indicator
             addSystemMessage(response);

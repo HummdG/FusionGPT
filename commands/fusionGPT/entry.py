@@ -163,26 +163,12 @@ def add_to_history(item, history_list):
         history_list.pop()  # Remove oldest item
 
 
-def enhance_prompt_with_history(message):
-    """Enhance user prompt with recent errors to improve reliability"""
+def get_latest_error_context():
+    """Get the most recent error context for RAG"""
     global recent_error_history
-    
-    if not recent_error_history:
-        return message
-        
-    # Check if message is likely related to fixing a previous error
-    fix_keywords = ["fix", "error", "issue", "problem", "failed", "resolve", "help", "not working"]
-    if any(keyword in message.lower() for keyword in fix_keywords):
-        # Add context about recent errors to help LLM generate more reliable code
-        error_context = "\n\nHere are recent errors to avoid:\n"
-        for i, error in enumerate(recent_error_history):
-            error_summary = error.split("\n")[0] if "\n" in error else error[:100]
-            error_context += f"{i+1}. {error_summary}\n"
-            
-        enhanced_message = f"{message}\n{error_context}"
-        return enhanced_message
-    
-    return message
+    if recent_error_history:
+        return recent_error_history[0]
+    return None
 
 
 # Use this to handle events sent from javascript in your palette.
@@ -212,7 +198,6 @@ def palette_incoming(html_args: adsk.core.HTMLEventArgs):
             if not code_to_execute:
                 html_args.returnData = "No code found to execute. Please try again or provide code directly."
                 return
-                
             # Log the code for debugging
             futil.log(f"Executing code:\n{code_to_execute}", adsk.core.LogLevels.InfoLogLevel)
             
@@ -231,11 +216,11 @@ def palette_incoming(html_args: adsk.core.HTMLEventArgs):
         is_fixing_error = any(keyword in user_message.lower() for keyword in 
                              ["fix", "error", "failed", "issue", "problem", "not working"])
         
-        # Enhance the prompt with error history if needed
-        enhanced_message = enhance_prompt_with_history(user_message) if is_fixing_error else user_message
+        # Get the most recent error for context if we're fixing something
+        error_context = get_latest_error_context() if is_fixing_error else None
         
-        # Normal message flow - get response from LLM
-        response = llm_client.process_message(enhanced_message)
+        # Normal message flow - get response from LLM with RAG
+        response = llm_client.process_message(user_message, error_context)
         
         # Extract code from the response
         code_to_execute = code_executor.extract_code(response)
@@ -260,17 +245,36 @@ def palette_incoming(html_args: adsk.core.HTMLEventArgs):
                 # Append execution result to the response
                 response += f"\n\n**Execution Result:**\n```\n{execution_result}\n```"
                 
-                # If execution failed, suggest fixes based on error patterns
+                # If execution failed, update our error history
                 if "Error" in execution_result:
-                    # Add common error resolutions based on patterns
-                    if "tangent" in execution_result and "revolve" in execution_result:
-                        response += "\n\n**Suggested Fix:** The revolve operation failed because the axis is tangent to the profile. Try moving the axis away from the profile or changing the profile shape."
-                    elif "profile" in execution_result and "extrude" in execution_result:
-                        response += "\n\n**Suggested Fix:** The extrude operation failed because of an invalid profile. Ensure the sketch contains closed profiles and correct profile selection."
-                    elif "body" in execution_result and "boolean" in execution_result:
-                        response += "\n\n**Suggested Fix:** The boolean operation failed. Verify all bodies exist before the operation."
-                    else:
-                        response += "\n\n**Tip:** If you'd like me to fix this error, just ask 'Please fix the error'."
+                    # Now that we have a real error from execution, we can save it for future reference
+                    add_to_history(execution_result, recent_error_history)
+                    
+                    # If this is a common error, try to generate a better solution
+                    if any(common_error in execution_result for common_error in 
+                          ["tangent", "profile", "sketch", "extrude", "revolve", "boolean"]):
+                        
+                        # Tell the user we're trying again with an improved approach
+                        response += "\n\n**Automatically fixing error...**\n"
+                        
+                        # Generate a new solution with the error context
+                        fixed_response = llm_client.process_message(
+                            f"Fix the error in the previous code: {user_message}", 
+                            execution_result
+                        )
+                        
+                        # Extract the new code
+                        fixed_code = code_executor.extract_code(fixed_response)
+                        
+                        if fixed_code:
+                            # Add the fixed solution to the response
+                            response += "\n\n**Improved Solution:**\n```python\n" + fixed_code + "\n```"
+                            
+                            # Execute the fixed code
+                            fixed_execution_result = code_executor.execute_code(fixed_code)
+                            
+                            # Add the execution result
+                            response += f"\n\n**Fixed Execution Result:**\n```\n{fixed_execution_result}\n```"
                 
             except Exception as e:
                 error_msg = f"Error during execution: {str(e)}\n{traceback.format_exc()}"
